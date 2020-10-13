@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="description" content="Adolfo Silva's Blog" />
+  <meta name="keywords" content="Software, Freelancer, HTML, CSS, JavaScript, Elixir, Python" />
+  <meta name="author" content="Adolfo Silva" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <link href="https://fonts.gstatic.com" rel="preconnect" crossorigin />
+  <link href="https://fonts.googleapis.com/css?family=Noto+Serif:wght@400&family=Lato:wght@700&display=swap"
+    rel="stylesheet" type="text/css" “media="print" onload="this.onload=null;this.media='all'" />
+
+  <link rel="stylesheet" href="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@10.2.1/build/styles/railscasts.min.css">
+  <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@10.2.1/build/highlight.min.js"></script>
+
+  <title>Continuous Integration with Drone CI</title>
+</head>
+
+<body>
+  <main>
+    <article>
+      <h1 class="article-title">Continuous Integration with Drone CI</h1>
+      <div class="article-details">
+        <div class="article-author">
+          <small>by Adolfo Silva</small>
+        </div>
+        <div class="article-date"><time pubdate datetime="2020-10-13" title="October 13th, 2020">Published on
+            10/13/20</time></div>
+      </div>
+
+      <img class="article-cover" src="images/drone_cover.png" alt="Drone CI Interface" />
+
+      <p>Continuous Integration has become a pillar of software quality assurance. When joining a new team nowadays we
+        expect to see a continuous integration and delivery pipeline in place and if we are lucky to participate in a
+        greenfield project we will be responsible for setting up a continuous integration and delivery pipeline.</p>
+      <p>Many teams try to save up time by opting to use a commercial solution such as TravisCI or CircleCI. While going
+        for commercial service will save you some initial time it will also cost you money that will accumulate over
+        time - $30 for the cheapest CircleCI plan and $69 for the cheapest TravisCI at the moment of the writing of this
+        article. That’s pretty cheap! But in this article, I want to show you an alternative to using a commercial
+        service by running your own CI server. Let’s go!</p>
+
+      <h2 id="introduction">Introduction</h2>
+      <p>We will be setting up a <a href="https://drone.io/">Drone CI</a> server. Drone is fairly lightweight. Using
+        around 11 MB of RAM for a server process and around 4 MB per runner process.</p>
+      <p>We will be using DigitalOcean as our cloud infrastructure provider. We will also use Docker to run our
+        continuous integration software. We are going to assume you are using Github. We will be setting up a
+        continuous
+        integration pipeline for a <a href="https://www.rust-lang.org/">Rust</a> project.</p>
+      <p>This article assumes you already have a running droplet (virtual server in DigitalOcean parlance) configured
+        as
+        a docker host fully capable of running docker containers.</p>
+
+      <h2 id="step-0-our-project">Step 0: Our project</h2>
+      <p>To setup a continuous integration pipeline, we need to have something to continuously integrate, right? For
+        this article, we’ll be using a fork of <a href="https://github.com/BurntSushi/ripgrep">ripgrep</a>, a Rust’s
+        version of the famous <a href="https://en.wikipedia.org/wiki/Grep">grep</a> command (but way faster!).</p>
+
+      <h2 id="step-1-create-drone-oauth-application-on-github">Step 1: Create Drone OAuth application on Github</h2>
+      <p>The first step is to register Drone as a OAuth application in Github.</p>
+      <p>Go to https://github.com/settings/applications/new and fill in the form with your app’s name, drone
+        server’s
+        URL and callback URL and then click “Register application”.</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_2.png" alt="Github OAuth application registration" />
+        <figcaption>Github OAuth application registration</figcaption>
+      </figure>
+      <p>After that, you should be redirected to your new app’s settings page, where you should see your app’s
+        Client ID
+        and Client Secret. Remember these two values, since we will be needing them for the next step.</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_3.png" alt="Github’s Drone OAuth application" />
+        <figcaption>Github’s Drone OAuth application</figcaption>
+      </figure>
+      <p>See:</p>
+      <ul>
+        <li><a
+            href="https://docs.drone.io/server/provider/github/#create-an-oauth-application">https://docs.drone.io/server/provider/github/#create-an-oauth-application</a>
+        </li>
+        <li><a
+            href="https://developer.github.com/apps/building-oauth-apps/creating-an-oauth-app">https://developer.github.com/apps/building-oauth-apps/creating-an-oauth-app</a>
+        </li>
+      </ul>
+
+      <h2 id="step-2-configure-your-server">Step 2: Configure your server</h2>
+      <p>The architecture of Drone is composed by one <code>server</code> and one or more <code>runners</code>.
+      </p>
+      <p>The Drone Server manages repositories, users and handles the build queue.</p>
+      <p>Drone Runners are standalone daemons that poll the server for pending pipelines to execute. There are
+        different
+        types of runners optimized for different use cases and runtime environments.</p>
+      <p>We will be using <a href="https://docs.docker.com/compose/">docker-compose</a> to help us setup our
+        drone
+        server.</p>
+      <p>Create a <code>docker-compose.yml</code> with the following services:</p>
+
+      <pre><code class="yaml">
+version: '3'
+
+volumes:
+  drone-data:
+
+services:
+  drone-server:
+    image: drone/drone:1.8.1
+    ports:
+      - 80:80
+    volumes:
+      - drone-data:/data 
+    environment:
+      - DRONE_GITHUB_CLIENT_ID=43fb1bf6a2be2dab8e15
+      - DRONE_GITHUB_CLIENT_SECRET=6af9f344f0644e44ca049f65352c7b1b118adefd
+      - DRONE_RPC_SECRET=e14ab7410c104bf4d10ae48285f72e80
+      - DRONE_SERVER_HOST=167.71.91.21
+      - DRONE_SERVER_PROTO=http
+      - DRONE_USER_CREATE=username:adolfosilva,admin:true</code></pre>
+
+      <p>Run <code>docker-compose up -d</code> to create and start the drone server.</p>
+      <p>The <code>DRONE_RPC_SECRET</code> is a random secret used for authentication between the server and
+        runners.
+        See https://docs.drone.io/server/provider/github/#create-a-shared-secret on how to create one.</p>
+      <p>The last environment variable <code>DRONE_USER_CREATE</code> will tell Drone to create an initial admin
+        account. See https://docs.drone.io/server/user/admin/ for details.</p>
+      <p>Adding or updating new users, enabling or disabling a repository and other actions can be done with <a
+          href="https://docs.drone.io/cli/install/">drone-cli</a>.</p>
+      <blockquote>
+        <p>As an aside, Drone uses <a href="https://www.sqlite.org/index.html">sqlite</a> has its default
+          database
+          engine. I recommend using <a href="https://www.postgresql.org/">PostgreSQL</a> instead. See
+          https://docs.drone.io/server/storage/database/ for details.</p>
+      </blockquote>
+
+      <h2 id="step-3-authorize-drone">Step 3: Authorize Drone</h2>
+      <p>Go to your Drone instance URL, in this case: http://167.71.91.21/</p>
+      <p>You should be redirected to Github’s OAuth authorization page, asking you to give Drone permission to
+        access
+        your repositories. If you will want to use Drone for a repository in one of your organizations, click
+        “Grant” to
+        grant permissions to that organization.</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_4.png" alt="Drone’s authorization request" />
+        <figcaption>Drone’s authorization request</figcaption>
+      </figure>
+      <p>Click “Authorize” and you should be redirected to Drone’s dashboard. Drone will be synchronizing your
+        repositories in the background so after a while you should see your Github repositories being listed.
+      </p>
+      <p>We search for our repository, in this case <code>adolfosilva/ripgrep</code> and click “Activate
+        repository”.
+      </p>
+      <p>You will be redirected to the repo’s settings page. I suggest setting your build timeout (Timeout)
+        time to
+        something lower than the default 60 minutes.</p>
+      <p>Congratulations, you now have your repository configured in Drone!</p>
+      <p>See:</p>
+      <ul>
+        <li><a href="https://docs.drone.io/server/provider/github/">https://docs.drone.io/server/provider/github</a>
+        </li>
+        <li><a href="https://docs.drone.io/server/provider/github">https://docs.drone.io/server/provider/github</a>
+        </li>
+      </ul>
+
+      <h2 id="step-4-create-your-configuration-file">Step 4: Create your configuration file</h2>
+      <p>Drone reads your configuration from a <code>.drone.yml</code> file.</p>
+      <p>Drone recently reached version 1.0 and the syntax has changed to accommodate new features. So if
+        you see two
+        different syntaxes for configuration in the wild, don’t panic - look for the word <code>kind</code>,
+        if you see
+        it then you are looking at the new configuration syntax.</p>
+      <p>Let’s dive into the basic concepts of Drone:</p>
+      <p>A pipeline is a set of steps that are run sequentially. You can also configure <a
+          href="https://docs.drone.io/pipeline/configuration/#multiple-pipelines">multiple pipelines</a> in
+        a single
+        configuration file that by default will be run concurrently.</p>
+      <p>There are different <a href="https://docs.drone.io/pipeline/overview/">types of pipelines</a> but I
+        will only
+        be focusing on the <code>docker</code> one in this article.</p>
+      <p>We are going to setup a simple pipeline with only three steps: first we check if the code is well
+        formatted,
+        then we type check our code and then finally we run the tests.</p>
+      <pre><code class="yaml">kind: pipeline
+type: docker
+name: default
+          
+steps:
+- name: formatting
+  image: rust:1.44.1-slim
+  commands:
+  - rustup component add rustfmt --toolchain 1.44.1-x86_64-unknown-linux-gnu
+  - cargo fmt -- --check
+          
+- name: check
+  image: rust:1.44.1-slim
+  commands:
+  - cargo check --verbose
+          
+- name: test
+  image: rust:1.44.1-slim
+  commands:
+  - cargo test --verbose</code></pre>
+
+      <p>Et voilà 🚀! We now have a valid configuration file that Drone will use to know what to do
+        when a change
+        to our codebase happens.</p>
+      <p>We could add more steps, like building and publishing documentation, checking your code coverage or
+        creating a
+        Github release. What steps do you choose to run is up to you. Be creative.</p>
+      <p>See:</p>
+      <ul>
+        <li><a href="https://docs.drone.io/pipeline/overview/">https://docs.drone.io/pipeline/overview</a>
+        </li>
+        <li><a href="https://docs.drone.io/pipeline/configuration/">https://docs.drone.io/pipeline/configuration/</a>
+        </li>
+      </ul>
+
+      <h2 id="step-5-setup-some-runners">Step 5: Setup some runners</h2>
+      <p>If we where to push a new commit to <code>adolfosilva/ripgrep</code> we would see a pending build
+        on Drone’s
+        side and it will stay there forever. Why?</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_5.png" alt="Pending Drone build" />
+        <figcaption>Pending Drone build</figcaption>
+      </figure>
+      <p>The reason for this is that we don’t have any runner setup. Let’s create one.</p>
+      <p>Open your <code>docker-compose.yml</code> file and add the following service:</p>
+      <pre><code class="yaml">drone-runner:
+  image: drone/drone-runner-docker:1.4.0
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    - DRONE_RPC_PROTO=http
+    - DRONE_RPC_HOST=167.71.91.21
+    - DRONE_RPC_SECRET=e14ab7410c104bf4d10ae48285f72e80</code></pre>
+      <p>There are more <a href="https://docs.drone.io/runner/docker/configuration/reference/">configuration</a>
+        attributes to explore. <code>DRONE_RUNNER_CAPACITY</code> and <code>DRONE_MEMORY_LIMIT</code> are
+        two important
+        ones that you can fine tune for better performance.</p>
+      <p>Run <code>docker-compose up -d drone-runner</code> to start the runner.</p>
+      <p>You should now see that your pending build has started:</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_6.png" alt="Running build" />
+        <figcaption>Running build</figcaption>
+      </figure>
+      <p>After a while, we should see if our build failed or passed.</p>
+      <figure class="center-text">
+        <img class="mw-100" src="images/drone_7.png" alt="Successful build" />
+        <figcaption>Successful build</figcaption>
+      </figure>
+      <p>It passed! Great. We now have continuous integration for our project.</p>
+      <h2 id="step-6-clean-unused-resources">Step 6: Clean unused resources</h2>
+      <p>One of the issues you will run into in production is that drone will be creating different
+        docker resources
+        like images, containers, volumes, etc. but it won’t dispose of them when they are no longer
+        needed. Fortunately,
+        there is an official tool that can help us:</p>
+      <p>From the project’s <a href="https://github.com/drone/drone-gc">description</a> on Github:</p>
+      <blockquote>
+        <p>drone-gc is a simple daemon that periodically removes unused docker resources. The garbage
+          collector is
+          optimized for continuous integration systems. It uses an lrfu algorithm to control the size of
+          your image
+          cache, while retaining the most frequently used images.</p>
+      </blockquote>
+      <pre><code class="yaml">drone-gc:
+  image: drone/gc:latest
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    # Interval at which the garbage collector is executed
+    - GC_INTERVAL=5m
+    # Maximum image cache size
+    - GC_CACHE=5gb
+    # Turn logging on!
+    # You can disable these after a successful setup.
+    - GC_DEBUG=true
+    - GC_DEBUG_PRETTY=true
+    - GC_DEBUG_COLOR=true</code></pre>
+      <p>Run <code>docker-compose up -d drone-gc</code> to start the garbage collector.</p>
+      <p>Checking the logs:</p>
+      <pre><code class="plaintext">2020-07-06T16:45:06Z |INFO| starting the garbage collector cache=5gb ignore-containers=[] ignore-images=[] interval=&quot;5 minutes&quot;
+2020-07-06T16:45:06Z |INFO| listening for docker events
+2020-07-06T16:50:06Z |DEBU| prune dangling images
+2020-07-06T16:50:06Z |DEBU| images pruned
+2020-07-06T16:50:06Z |DEBU| image cache below threshold size=135.8MB threshold=5GB</code></pre>
+      <p>See: <a href="https://github.com/drone/drone-gc">https://github.com/drone/drone-gc</a></p>
+
+      <h2 id="bonus-round-autoscaling">Bonus Round: Autoscaling</h2>
+      <p>Eventually, when multiple people start to want to run builds, your single runner will not
+        cope with the demand
+        and you will have to create new runner instances. So what can we do?</p>
+      <p>We can scale vertically our server to decrease build times. We can add another runner
+        manually by copying the
+        <code>drone-runner</code> service (kipping in mind that two runners on the same machine will
+        only be of marginal
+        help, since it will sacrifice individual build times in favor of having progress on multiple
+        builds, since the
+        runners will be fighting for CPU time). We could even run docker in <a
+          href="https://docs.docker.com/engine/swarm/">swarm mode</a> and have multiple runners on
+        different servers,
+        but the setup is more complex.</p>
+      <p>But what if we could automatically scale our server instances up and down to match our needs?
+        We can do just
+        that with <code>drone/autoscaler</code>:</p>
+
+      <pre><code class="yaml">drone-autoscaler:
+  image: drone/autoscaler:1.7
+  environment:
+    - DRONE_SERVER_HOST=167.71.91.21
+    - DRONE_SERVER_PROTO=http
+    - DRONE_SERVER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5c...
+    - DRONE_AGENT_TOKEN=IiOiIxMjM0NTY3ODkwIiwibmF...
+    # Minimum number of physical servers that
+    # the autoscaler must keep alive.
+    - DRONE_POOL_MIN=2
+    # Maximum number of physical servers that
+    # the autoscaler can provision
+    - DRONE_POOL_MAX=4
+    # Interval at which the autoscaler algorithm is run
+    - DRONE_INTERVAL=1m
+    # Minimum number of idle servers
+    # available for future workloads
+    - DRONE_CAPACITY_BUFFER=0
+    # Maximum number of pipelines an agent
+    # can concurrently execute
+    - DRONE_AGENT_CONCURRENCY=2
+    # Turn logging on!
+    # You can disable these after a successful setup.
+    - DRONE_LOGS_DEBUG=true
+    - DRONE_LOGS_COLOR=true
+    - DRONE_LOGS_PRETTY=true</code></pre>
+
+      <p>From the <a href="https://autoscale.drone.io/">documentation</a>:</p>
+      <blockquote>
+        <p>The Drone Autoscaler is a standalone daemon that continuously polls your build queue and
+          provisions or
+          terminates server instances based on volume.</p>
+      </blockquote>
+      <p><code>drone/autoscaler</code> will listen to your build needs and create and delete new
+        droplets running drone
+        agents when needed. This of course has financial costs so think about it before doing it.</p>
+      <p>See: <a href="https://autoscale.drone.io/">https://autoscale.drone.io</a></p>
+
+      <h2 id="other-goodies">Other goodies</h2>
+      <p>I suggest exploring the documentation and main website of the project to find what more can
+        Drone do for you.
+      </p>
+      <p>Where is an incomplete list of other things Drone is capable of:</p>
+      <ul>
+        <li><a href="https://docs.drone.io/cron/">Cron jobs</a> - Run your pipelines at a scheduled time</li>
+        <li><a href="https://docs.drone.io/extensions/secret/">Secret sourcing</a> from third party service - Source
+          your secrets from a <a href="https://www.vaultproject.io/">Vault</a> server, for example</li>
+        <li><a href="https://docs.drone.io/server/storage/encryption/">Storage encryption</a></li>
+        <li><a href="http://plugins.drone.io/">Plugins</a> and <a
+            href="https://docs.drone.io/extensions/overview/">extensions</a> - build and publish docker images with <a
+            href="http://plugins.drone.io/drone-plugins/drone-docker/">drone-docker</a>, fetch docker images from a
+          private registry with the <a href="https://docs.drone.io/extensions/registry/">registry extension</a> or send
+          a notification to a Slack channel after an event; just some of the things you can do with plugins and
+          extensions</li>
+      </ul>
+
+
+      <h2 id="conclusion">Conclusion</h2>
+      <p>We setup a simple continuous integration pipeline for a repository in Gihub, but for
+        production purposes this
+        is not enough. We need to use HTTPS and we need a robust backup solution, but those things
+        go outside of the
+        scope of this article.</p>
+      <p>For a complete <code>docker-compose.yml</code> with all the services configured see:
+        <a
+          href="https://gist.github.com/adolfosilva/ac1028bca9ea04ed69f1a80ca5f89dab">https://gist.github.com/adolfosilva/ac1028bca9ea04ed69f1a80ca5f89dab</a>
+      </p>
+
+      <p>Resources:</p>
+      <ul>
+        <li><a href="https://discourse.drone.io/">https://discourse.drone.io/</a></li>
+        <li><a
+            href="https://github.com/drone/drone/blob/master/CHANGELOG.md">https://github.com/drone/drone/blob/master/CHANGELOG.md</a>
+        </li>
+        <li><a href="https://github.com/drone/drone-gc">https://github.com/drone/drone-gc</a></li>
+        <li><a href="https://autoscale.drone.io/">https://autoscale.drone.io/</a></li>
+      </ul>
+  </main>
+
+  <footer>
+    <span>---</span>
+    <p>Check other <a href="/archive.html">posts</a></p>
+  </footer>
+
+  <script type="application/ld+json">
+  {
+    "@context": "http://schema.org",
+    "@type": "Article",
+    "headline": "Continuous Integration with Drone CI",
+    "image": [
+      "https://hello.adolfosilva.org/blog/images/drone_cover.png"
+    ],
+    "datePublished": "2020-10-13T15:01:07Z",
+    "dateModified": "2020-10-13T15:01:07Z",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://hello.adolfosilva.org/blog/ci-drone.html"
+    },
+    "author": {
+      "@type": "Person",
+      "name": "Adolfo Silva"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "adolfosilva.org",
+    },
+    "description": "Setup a Drone CI instance."
+  }
+  </script>
+
+  <script>hljs.initHighlightingOnLoad();</script>
+</body>
+
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    font-size: 18px;
+    background-color: #161616;
+    line-height: 1.6;
+    font-family: "Noto Serif", serif;
+    color: #f8f8f8;
+    max-width: 46rem;
+    padding: 4rem 6rem 4rem 6rem;
+  }
+
+  h1 {
+    font-size: 2em;
+    margin: 0.67em 0;
+  }
+
+  a {
+    color: rgb(156, 168, 239);
+    text-decoration: none;
+    text-underline-offset: 0.25em;
+  }
+
+  a:hover,
+  a:focus {
+    text-decoration: underline;
+  }
+
+  @media only screen and (max-width: 768px) {
+    body {
+      padding: 1rem 2rem 0 2rem;
+    }
+  }
+
+  .article-title {
+    margin: 0.25em 0;
+  }
+
+  .article-details {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .article-cover {
+    width: 100%;
+  }
+
+  .center-text {
+    text-align: center;
+  }
+
+  .article-date {
+    font-size: 0.85em;
+    margin-bottom: 0.5em;
+  }
+
+  .mw-100 {
+    max-width: 100%;
+  }
+
+  blockquote>p::before {
+    content: "> ";
+  }
+</style>
+
+</html>
